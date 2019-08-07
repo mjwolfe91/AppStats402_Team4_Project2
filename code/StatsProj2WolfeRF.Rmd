@@ -266,6 +266,7 @@ ftable(addmargins(table(heartData$TenYearCHD,heartData$diabetes)))
 Let's see if we can reduce this dataset down to a few principle components.
 
 ```{r pca}
+numeric_cols <- subset(heartData, select = -c(Gender, education, currentSmoker, BPMeds, prevalentStroke, prevalentHyp, diabetes, TenYearCHD))
 pc.result<-prcomp(numeric_cols,scale.=TRUE)
 pc.scores<-pc.result$x
 pc.scores<-data.frame(pc.scores)
@@ -344,6 +345,45 @@ abline(a=0, b= 1)
 text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
 
 ```
+
+```{r decision tree}
+par(mfrow=c(1,1))
+tree.deep<-tree(TenYearCHD~., data=heartData) #default is for atleast 5 observations in the child nodes for split to occur
+summary(tree.deep)
+plot(tree.deep)
+text(tree.deep,pretty=0)
+set.seed(123)
+cv.chd=cv.tree(tree.deep,FUN=prune.tree,method="deviance")
+names(cv.chd)
+cv.chd
+plot(cv.chd)
+par(mfrow=c(1,1))
+plot(cv.chd$size,cv.chd$dev,type="b")
+prune.chd=prune.tree(tree.deep,best=8)
+plot(prune.chd)
+text(prune.chd,pretty=0)
+```
+
+
+```{r decision tree}
+train.tree<-tree(TenYearCHD~.,data=heartData.train)
+summary(train.tree)
+plot(train.tree)
+text(train.tree,pretty=0)
+plot(cv.tree(train.tree,FUN=prune.tree,method="deviance"))
+
+mytree<-tree(TenYearCHD~.,data=heartData.train)
+yhat.tree<-predict(mytree,newdata=heartData.test)
+plot(yhat.tree,heartData.test$TenYearCHD,main="Single Tree with 8 splits",xlab="Predicted",ylab="Ten Year CHD")
+abline(0,1)
+
+mytree<-tree(TenYearCHD~.,data=heartData.train,minsize=8,mindev=.0001)
+yhat.tree<-predict(mytree,newdata=heartData.test)
+plot(yhat.tree,heartData.test$TenYearCHD,main="Single Tree with Deep Splits",xlab="Predicted",ylab="Ten Year CHD")
+abline(0,1)
+```
+
+
 
 
 
