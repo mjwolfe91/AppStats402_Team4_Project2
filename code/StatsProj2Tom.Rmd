@@ -1,0 +1,713 @@
+---
+author: "Tom Gianelle"
+date: "8/05/2019"
+output: 
+  html_document:
+    keep_md: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(kableExtra)
+library(readxl)
+library(tidyquant)
+library(pastecs)
+library(ggplot2)
+library(corrplot)
+library(MASS)
+library(rpart.plot)
+library(ROSE)
+library(randomForest)
+library(caret)
+library(RCurl)
+library(ROCR)
+
+```
+
+``` {r SessionInfo}
+sessionInfo()
+```
+
+### Objective 2:  With a simple logistic regression model as a baseline, perform additional competing models to improve on prediction performance metrics.  Which metrics are up to you and your given data set.
+### •	Record the predictive performance metrics from your simple, highly interpretable model from Objective 1.
+### •	You must include one additional logistic regression model which is also a more complicated logistic regression model than in Objective 1.  By complicated, I do not mean that you include more predictors (that will be somewhat sorted out in Objective 1), but rather model complexity through interaction terms, new variables created by the group, transformations or additions through polynomials.
+
+### •	Create another competing model using just the continuous predictors and use LDA or QDA.  
+
+### •	Use a nonparameteric model approach as a competing model.  Random forest or decision tree for predictors that are both categorical and continuous or a k-nearest neighbors approach if just working with continuous predictors. 
+
+### •	Provide a summary table of the performance across the competing methods. Summarize the overall findings.  A really great report will also give insight as to why the “best” model won out.  This is where a thorough EDA will always help.
+
+## Load Data
+
+```{r}
+heartURL <- getURL("https://raw.githubusercontent.com/mjwolfe91/AppStats402_Team4_Project2/master/data/framingham.csv")
+heartData <- read.csv(text=heartURL, header=TRUE)
+#heartData &lt;- read.csv('C:/Users/micha/OneDrive/Desktop/SMU MSDS/Applied Stats/Project 2/Data/framingham.csv')
+head(heartData)
+```
+
+Some of these data have categories that aren't particularly intuitive. Let's recode some of them.
+
+## Rename columns
+
+```{r recode}
+#https://dplyr.tidyverse.org/reference/recode.html
+
+heartData$male = recode(heartData$male, '1' = 'male', '0' = 'female')
+names(heartData)[1] = 'Gender'
+unique(heartData$Gender)
+
+heartData$education = recode(heartData$education, '1'='SomeHighSchool', '2'='FinishedHighSchool/GED',
+       '3'='SomeCollege/VocationalSchool', '4'='College')
+unique(heartData$education)
+
+heartData$currentSmoker = recode(heartData$currentSmoker, '1'='Yes', '0'='No')
+unique(heartData$currentSmoker)
+
+heartData$BPMeds = recode(heartData$BPMeds, '1'='Yes', '0'='No')
+unique(heartData$BPMeds)
+
+unique(heartData$prevalentStroke)
+heartData$prevalentStroke = recode(heartData$prevalentStroke, '1'='Yes', '0'='No')
+
+unique(heartData$prevalentHyp)
+heartData$prevalentHyp = recode(heartData$prevalentHyp, '1'='Yes', '0'='No')
+
+unique(heartData$TenYearCHD)
+heartData$TenYearCHD = recode(heartData$TenYearCHD, '1'='Yes', '0'='No')
+
+unique(heartData$diabetes)
+heartData$diabetes = recode(heartData$diabetes, '1'='Yes', '0'='No')
+```
+
+## EDA
+
+## Column analysis and cleanup
+
+Let's first confirm that our datatypes agree with the analysis we want to do.
+
+```{r pairs}
+sapply(heartData, class)
+```
+
+Those character columns would do better as factors, so let's change them.
+
+```{r pairs}
+cols_factor &lt;- c("Gender", "education", "currentSmoker", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes", "TenYearCHD")
+heartData[cols_factor] &lt;- lapply(heartData[cols_factor], factor)
+```
+
+Now let's take some sums and summaries.
+
+```{r}
+numeric_cols &lt;- subset(heartData, select = -c(Gender, education, currentSmoker, BPMeds, prevalentStroke, prevalentHyp, diabetes, TenYearCHD))
+colSums(numeric_cols)
+colSums(is.na(heartData))
+summary(heartData)
+```
+
+Looks like there's some missing values in cigsPerDay, totChol, heartRate, and glucose. Let's see how much leverage these values have.
+
+```{r}
+dim(heartData)
+dim(na.omit(heartData))
+3658/4240
+```
+
+We can keep 86% of our values, so let's go ahead and remove these rows.
+
+```{r}
+heartData = na.omit(heartData)
+dim(heartData)
+summary(heartData)
+```
+
+Much better! However, it would be easier to interpret the model outcome as a person with _ is _ more likely to be diagnosed with heart disease, so let's adjust the response variable accordingly.
+
+```{r}
+levels(heartData$TenYearCHD)
+heartData$TenYearCHD = relevel(heartData$TenYearCHD, ref='No')
+```
+
+## Continuous variables
+
+Let's start by checking correlations.
+
+```{r glucose}
+aggregate(glucose~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=glucose)) + geom_boxplot()
+```
+
+Lots of outliers here. Hard to say if there is correlation because of this.
+
+```{r heartrate}
+aggregate(heartRate~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=heartRate)) + geom_boxplot()
+```
+
+No correlation here.
+
+```{r BMI}
+aggregate(BMI~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=BMI)) + geom_boxplot()
+```
+
+Looks like high BMI and heart disease might be correlated.
+
+```{r diastolic BP}
+aggregate(diaBP~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=diaBP)) + geom_boxplot()
+```
+
+Similarly appears that high diastolic BP correlates to ten year CHD.
+
+```{r systolic BP}
+aggregate(sysBP~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=sysBP)) + geom_boxplot()
+```
+
+Same with systolic BP.
+
+```{r total cholesterol}
+aggregate(totChol~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=totChol)) + geom_boxplot()
+```
+
+Again with cholesterol.
+
+```{r cigarettes per day}
+aggregate(cigsPerDay~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=cigsPerDay)) + geom_boxplot()
+```
+
+Yet again with cigarette use. Lots of outliers here too.
+
+```{r age}
+aggregate(age~TenYearCHD, data=heartData, summary)
+ggplot(heartData, aes(x=TenYearCHD, y=age)) + geom_boxplot()
+```
+
+Higher age appears to be associated with CHD as well.
+
+Let's run some histograms.
+
+```{r histograms}
+for (i in colnames(numeric_cols)){
+  hist(heartData[[i]])
+}
+```
+
+Mostly normally distributed with a couple exceptions. Now let's check mutlicolinearity and correlations.
+
+```{r pairs correlation}
+pairs(~ age + cigsPerDay + totChol + sysBP + diaBP + BMI + heartRate + glucose, data=heartData)
+pairs(~ age + cigsPerDay + totChol + sysBP + diaBP + BMI + heartRate + glucose, data=heartData,
+      col=heartData$TenYearCHD)
+heartData.cor &lt;- heartData %&gt;% select(age, cigsPerDay, totChol, sysBP, diaBP, BMI, heartRate, glucose) %&gt;%
+  cor()
+heartData.cor
+heatmap.2(heartData.cor,col=redgreen(20), 
+          density.info="none", trace="none", dendrogram=c("row"), 
+          symm=F,symkey=T,symbreaks=T, scale="none")
+```
+
+There's a strong correlation between systolic blood pressure and diastolic blood pressure...which makes practical sense considering they are essentially the same measure. Age does a good job of stratifying the variables and reducing multicollinearity. Two takeaways from this - first might be to remove either systolic or diastolic BP, second is to perhaps create interactions on the age variable.
+
+## Categorical variables
+
+Next let's check the categorical variables, first by measuring and plotting proportionality.
+
+```{r diabetes}
+attach(heartData)
+prop.table(table(TenYearCHD,diabetes),2)
+plot(TenYearCHD~diabetes,col=c("red","blue"))
+```
+
+There appears to be an unbalanced response rate. We will need to keep this in mind when creating training data, and will likely necessitate a correction to the coefficient. It also appears that prevalent diabetes is associated with ten year CHD.
+
+```{r prevalentHyp}
+prop.table(table(TenYearCHD,prevalentHyp),2)
+plot(TenYearCHD~prevalentHyp,col=c("red","blue"))
+```
+
+Again we see prevalent hypertension associated with ten year CHD.
+
+```{r prevalentStroke}
+prop.table(table(TenYearCHD,prevalentStroke),2)
+plot(TenYearCHD~prevalentStroke,col=c("red","blue"))
+```
+
+Another association
+
+```{r BPMeds}
+prop.table(table(TenYearCHD,BPMeds),2)
+plot(TenYearCHD~BPMeds,col=c("red","blue"))
+```
+
+Another association, and class imbalance
+
+```{r currentSmoker}
+prop.table(table(TenYearCHD,currentSmoker),2)
+plot(TenYearCHD~currentSmoker,col=c("red","blue"))
+```
+
+Oddly appears that there is no association between smoking and ten year CHD
+
+```{r education}
+prop.table(table(TenYearCHD,education),2)
+mosaicplot(TenYearCHD~education, las=1, main = 'Education vs Heart Disease')
+```
+
+Higher education appears to have lower rates of ten year CHD.
+
+```{r gender}
+prop.table(table(TenYearCHD,currentSmoker),2)
+plot(TenYearCHD~Gender,col=c("red","blue"), las=1)
+```
+
+Males appear to develop CHD more often.
+
+```{r ftables}
+ftable(addmargins(table(heartData$TenYearCHD,heartData$currentSmoker))) 
+ftable(addmargins(table(heartData$TenYearCHD,heartData$Gender))) 
+ftable(addmargins(table(heartData$TenYearCHD,heartData$education))) 
+ftable(addmargins(table(heartData$TenYearCHD,heartData$BPMeds))) 
+ftable(addmargins(table(heartData$TenYearCHD,heartData$prevalentStroke))) 
+ftable(addmargins(table(heartData$TenYearCHD,heartData$prevalentHyp))) 
+ftable(addmargins(table(heartData$TenYearCHD,heartData$diabetes)))
+```
+
+Tom - More complex model with interactions, LDA and RF
+
+## Correlations
+library(corrplot)
+df <- data.frame(heartData[2], heartData)
+correlations <- cor(heartData[,1:8])
+corrplot(correlations, method="circle")
+
+## Complex logistic regression  ---  using LASSO and Forward model -- tested numerous interactions.   One example below.   None resulted in a better model.
+#Training Set
+dat.train <- heartData
+dat.train.x <- dat.train[,1:15]
+
+dat.train.y <- dat.train$TenYearCHD
+dat.train.y <- as.factor(as.character(dat.train.y))
+
+glm.fit <- glm(dat.train.y ~ age+sysBP+cigsPerDay+male+diabetes+prevalentStroke+age:sysBP+age:diabetes, data = heartData, family = binomial)
+
+summary(glm.fit)
+
+## LDA  --- all the variables
+
+#Training Set
+dat.train <- heartData[1:3000,]
+dat.train.x <- dat.train[,1:15]
+
+dat.train.y <- dat.train$TenYearCHD
+dat.train.y <- as.factor(as.character(dat.train.y))
+
+fit.lda <- lda(dat.train.y ~ ., data = dat.train.x)
+pred.lda <- predict(fit.lda, newdata = dat.train.x)
+
+preds <- pred.lda$posterior
+preds <- as.data.frame(preds)
+
+pred <- prediction(preds[,2],dat.train.y)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+## LDA with only continous variables
+
+#Training Set
+dat.train <- heartData[1:3000,]
+dat.train.x <- dat.train[,1:15]
+
+dat.train.y <- dat.train$TenYearCHD
+dat.train.y <- as.factor(as.character(dat.train.y))
+
+fit.lda <- lda(dat.train.y ~ age+cigsPerDay+totChol+sysBP+BMI+heartRate+glucose, data = dat.train.x)
+pred.lda <- predict(fit.lda, newdata = dat.train.x)
+
+preds <- pred.lda$posterior
+preds <- as.data.frame(preds)
+
+pred <- prediction(preds[,2],dat.train.y)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+## LDA  --- with combined LASSO and Forward model
+
+#Training Set
+dat.train <- heartData[1:3000,]
+dat.train.x <- dat.train[,1:15]
+
+dat.train.y <- dat.train$TenYearCHD
+dat.train.y <- as.factor(as.character(dat.train.y))
+
+fit.lda <- lda(dat.train.y ~ age+sysBP+cigsPerDay+male+diabetes+prevalentStroke, data = dat.train.x)
+pred.lda <- predict(fit.lda, newdata = dat.train.x)
+
+preds <- pred.lda$posterior
+preds <- as.data.frame(preds)
+
+pred <- prediction(preds[,2],dat.train.y)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+
+
+#Random Forest
+
+dat.train.rf <- heartData[1:3000,]
+dat.train.rf$TenYearCHD<-factor(dat.train.rf$TenYearCHD)
+
+CHD_train_rose <- ROSE(TenYearCHD ~ ., data = dat.train.rf, seed=125)$data
+
+train.rf<-randomForest(TenYearCHD~.,data=CHD_train_rose,ntree=500,importance=T,na.action = na.omit)
+fit.pred<-predict(train.rf,newdata=dat.train.rf,type="prob")
+
+
+
+pred <- prediction(fit.pred[,2], dat.train.rf$TenYearCHD)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+
+
+#Predict Validation Set I --- use last 3rd of heartData data
+
+
+dat.val1.rf <- heartData[3001:nrow(heartData),]
+
+pred.val1<-predict(train.rf,newdata=dat.val1.rf,type="prob")
+
+
+
+pred <- prediction(pred.val1[,2], dat.val1.rf$TenYearCHD)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+
+
+
+#<<<need to use imputed data>>>   Train/test set split and compare knn,regular regression,
+#and a regression tree's test MSE.
+library(tree)
+set.seed(123)
+#index<-sample(1:200,100)
+train<-heartData[1:3000,]
+test<-heartData[3001:nrow(heartData),]
+
+train.tree<-tree(TenYearCHD~age+sysBP+cigsPerDay+male+diabetes+prevalentStroke,train)
+summary(train.tree)
+plot(train.tree)
+text(train.tree,pretty=0)
+plot(cv.tree(train.tree,FUN=prune.tree,method="deviance"))
+
+testMSE<-mean((test$sales- predict(train.tree,newdata=test) )^2)
+
+
+knn<-FNN::knn.reg(train = train[,-c(3,4)], test =test[,-c(3,4)], y = train$TenYearCHD, k = 5)
+testMSE.knn<-mean( ( test$TenYearCHD-knn$pred)^2)
+
+full.fit<-lm(sales~TV+radio+TV:radio,train)
+testMSE.ols<-mean((test$sales-predict(full.fit,test))^2)
+
+
+testMSE
+testMSE.knn
+testMSE.ols
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Now lets move on to bagging and random forrest using the same data set and see
+#How we can improve over a simple decision tree.
+
+
+train<-Adver[index,]
+test<-Adver[-index,]
+
+par(mfrow=c(1,3))
+
+#Note this is a bagged tree since Im foring mytry "m" to equal 2
+
+bag.adv<-randomForest( sales ~ TV+radio,data=Adver , subset=index ,
+                       mtry=2,importance =TRUE,ntree=100)
+
+yhat.bag = predict (bag.adv , newdata=test)
+plot(yhat.bag , test$sales,main="Bagged Model",xlab="Predicted",ylab="Test Set Sales")
+abline (0,1)
+
+library(tree)
+mytree<-tree(sales~TV+radio,train)
+yhat.tree<-predict(mytree,newdata=test)
+plot(yhat.tree,test$sales,main="Single Tree with 8 splits",xlab="Predicted",ylab="Test Set Sales")
+abline(0,1)
+
+mytree<-tree(sales~TV+radio,train,minsize=8,mindev=.0001)
+yhat.tree<-predict(mytree,newdata=test)
+plot(yhat.tree,test$sales,main="Single Tree with Deep Splits",xlab="Predicted",ylab="Test Set Sales")
+abline(0,1)
+
+
+
+
+
+
+#The next code is not necessary for an analysis, but is helpful to bring home
+#the points...
+#1  Bagging improves prediction accuracy over a single tree just make sure 
+#you resample at 50-100 times.
+#2  The OOB error does a pretty good job of estimating what a true independent
+#test set, its just a little bit too optimistic
+
+OOB.MSE<-c()
+test.MSE<-c()
+for(i in 1:300){
+  bag.adv<-randomForest( sales ~ TV+radio,data=Adver , subset=index ,
+                         mtry=2,importance =TRUE,ntree=i) 
+  
+  yhat.bag = predict (bag.adv , newdata=test)
+  test.MSE[i]<-mean((test$sales-yhat.bag)^2)
+  OOB.MSE[i]<-mean((train$sales-bag.adv$predicted)^2)
+}
+par(mfrow=c(1,1))
+plot(1:300,test.MSE,type="l",col="red",ylim=c(0,2.5))
+lines(1:300,OOB.MSE,col="blue")
+lines(1:300,rep(2.01,300),col="black",lty=2)
+legend("topright",legend=c("Test MSE (Bagging)","OOB MSE (Bagging)","Test MSE (Single Tree)"),col=c("red","blue","black"),lty=c(1,1,2))
+
+
+
+
+
+
+
+
+ 
+##  ******
+##  Prof Turner Validation code
+##  ******
+
+#Valid set I
+dat.val1 <- dat[which(dat$Set == "Validation I"),]
+dat.val1.x <- dat.val1[,c(6:ncol(dat))]
+
+dat.val1.y <- dat.val1$Censor
+dat.val1.y <- as.factor(as.character(dat.val1.y))
+
+
+pred.lda1 <- predict(fit.lda, newdata = dat.val1.x)
+
+preds1 <- pred.lda1$posterior
+preds1 <- as.data.frame(preds1)
+
+pred1 <- prediction(preds1[,2],dat.val1.y)
+roc.perf = performance(pred1, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred1, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+#Valid set II
+dat.val2 <- dat[which(dat$Set == "Validation II"),]
+dat.val2.x <- dat.val2[,c(5:ncol(dat))]
+
+dat.val2.y <- dat.val2$Censor
+dat.val2.y <- as.factor(as.character(dat.val2.y))
+
+pred.lda2 <- predict(fit.lda, newdata = dat.val2.x)
+
+preds2 <- pred.lda2$posterior
+preds2 <- as.data.frame(preds2)
+
+pred2 <- prediction(preds2[,2],dat.val2.y)
+roc.perf = performance(pred2, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred2, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+#Valid set III
+dat.val3 <- dat[which(dat$Set == "Validation III"),]
+dat.val3.x <- dat.val3[,c(5:ncol(dat))]
+
+dat.val3.y <- dat.val3$Censor
+dat.val3.y <- as.factor(as.character(dat.val3.y))
+
+
+pred.lda3 <- predict(fit.lda, newdata = dat.val3.x)
+
+preds3 <- pred.lda3$posterior
+preds3 <- as.data.frame(preds3)
+
+pred3 <- prediction(preds3[,2],dat.val3.y)
+roc.perf = performance(pred3, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred3, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+
+
+#Predict Validation Set 2
+dat.val2.rf <- dat.val2[,-(1:4)]
+#dat.val1.rf$Censor<-factor(dat.train.rf$Censor)
+
+pred.val2<-predict(train.rf,newdata=dat.val2.rf,type="prob")
+
+
+
+pred <- prediction(pred.val2[,2], dat.val2.rf$Censor)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+#Predict Validation Set 3
+dat.val3.rf <- dat.val3[,-(1:4)]
+#dat.val1.rf$Censor<-factor(dat.train.rf$Censor)
+
+pred.val3<-predict(train.rf,newdata=dat.val3.rf,type="prob")
+
+
+
+pred <- prediction(pred.val3[,2], dat.val3.rf$Censor)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+
+
+#Predicted surface of our rf model
+predictors<-data.frame(TV=rep(0:300,51),radio=rep(0:50,each=301))
+bag.full<-randomForest( sales ~ TV+radio,data=Adver , subset=index ,
+                        mtry=2,importance =TRUE,ntree=100)
+
+pred.surface<-matrix(predict(bag.full,predictors),301,51)
+plot3d(TV,radio,sales)
+surface3d(0:300,0:50,pred.surface,alpha=.4)
+
+
+
+
+
+#Suppose we did not have all of these validation data sets.  We can assess how well our model building process works through Cross validation.
+#The idea is that we can get an idea of how well the approach is going to perform on new data not yet collected.
+#We will use AUC as the performance matrix.  Note we only consider the lasso logistic here, but in practice we could 
+#run many different models to compare directly.
+
+nloops<-50   #number of CV loops
+ntrains<-dim(dat.train.x)[1]  #No. of samples in training data set
+cv.aucs<-c() #initializing a vector to store the auc results for each CV run
+
+for (i in 1:nloops){
+ index<-sample(1:ntrains,60)
+ cvtrain.x<-as.matrix(dat.train.x[index,])
+ cvtest.x<-as.matrix(dat.train.x[-index,])
+ cvtrain.y<-dat.train.y[index]
+ cvtest.y<-dat.train.y[-index]
+ 
+ cvfit <- cv.glmnet(cvtrain.x, cvtrain.y, family = "binomial", type.measure = "class") 
+ fit.pred <- predict(cvfit, newx = cvtest.x, type = "response")
+ pred <- prediction(fit.pred[,1], cvtest.y)
+ roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+ auc.train <- performance(pred, measure = "auc")
+ auc.train <- auc.train@y.values
+ 
+ cv.aucs[i]<-auc.train[[1]]
+}
+
+hist(cv.aucs)
+summary(cv.aucs)
+
+
+
+
+#Doing the same procedure for random allocation of response values.
+#Good practice when number of yes/no is not balanced.
+
+
+nloops<-50   #number of CV loops
+ntrains<-dim(dat.train.x)[1]  #No. of samples in training data set
+cv.aucs<-c()
+dat.train.yshuf<-dat.train.y[sample(1:length(dat.train.y))]
+
+for (i in 1:nloops){
+  index<-sample(1:ntrains,60)
+  cvtrain.x<-as.matrix(dat.train.x[index,])
+  cvtest.x<-as.matrix(dat.train.x[-index,])
+  cvtrain.y<-dat.train.yshuf[index]
+  cvtest.y<-dat.train.yshuf[-index]
+  
+  cvfit <- cv.glmnet(cvtrain.x, cvtrain.y, family = "binomial", type.measure = "class") 
+  fit.pred <- predict(cvfit, newx = cvtest.x, type = "response")
+  pred <- prediction(fit.pred[,1], cvtest.y)
+  roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+  auc.train <- performance(pred, measure = "auc")
+  auc.train <- auc.train@y.values
+  
+  cv.aucs[i]<-auc.train[[1]]
+}
+
+hist(cv.aucs)
+summary(cv.aucs)
+
+
+
