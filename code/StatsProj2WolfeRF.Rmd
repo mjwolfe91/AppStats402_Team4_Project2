@@ -263,6 +263,8 @@ ftable(addmargins(table(heartData$TenYearCHD,heartData$prevalentHyp)))
 ftable(addmargins(table(heartData$TenYearCHD,heartData$diabetes)))
 ```
 
+##PCA
+
 Let's see if we can reduce this dataset down to a few principle components.
 
 ```{r pca}
@@ -271,18 +273,54 @@ pc.result<-prcomp(numeric_cols,scale.=TRUE)
 pc.scores<-pc.result$x
 pc.scores<-data.frame(pc.scores)
 pc.scores$TenYearCDH<-heartData$TenYearCHD
-ggplot(data = pc.scores, aes(x = PC1, y = PC2)) +
-  geom_point(aes(col=TenYearCDH), size=1)+
-  ggtitle("PCA of Framingham Heart Disease Data")
+pc.result$rotation
 ```
 
-Separation isn't great here. This might not be the way to go.
+Looks like fairly even variance. It's possible using PC's won't make much of a difference. Let's check the Scree plots and clustering.
+
+```{r pca}
+pc.eigen<-(pc.result$sdev)^2
+pc.prop<-pc.eigen/sum(pc.eigen)
+pc.cumprop<-cumsum(pc.prop)
+plot(1:8,pc.prop,type="l",main="Scree Plot",ylim=c(0,1),xlab="PC #",ylab="Proportion of Variation")
+lines(1:8,pc.cumprop,lty=3)
+```
+
+If we were extremely conservative and used 0.1 as a cutoff we would still likely have 7 components. Looks like our initial assumption that using PC's is not the way to go might have been correct. Let's do some clustering around the first few PC's and confirm.
+
+```{r pca}
+ggplot(data = pc.scores, aes(x = PC1, y = PC2)) +
+  geom_point(aes(col=TenYearCHD), size=1)+
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  ggtitle("PCA plot of Coronary Heart Disease Data")
+
+ggplot(data = pc.scores, aes(x = PC1, y = PC3)) +
+    geom_point(aes(col=TenYearCHD), size=1)+
+  geom_hline(yintercept = 0, colour = "gray65") +
+    geom_vline(xintercept = 0, colour = "gray65") +
+    ggtitle("PCA plot of Coronary Heart Disease Data")
+
+  
+ggplot(data = pc.scores, aes(x = PC2, y = PC3)) +
+    geom_point(aes(col=TenYearCHD), size=1)+
+  geom_hline(yintercept = 0, colour = "gray65") +
+    geom_vline(xintercept = 0, colour = "gray65") +
+    ggtitle("PCA plot of Coronary Heart Disease Data")
+```
+
+Separation isn't great in any of these. We will not use PCA for this data.
 
 ```{r randomforest eda}
 simple.fit<-lm(TenYearCHD~., data=heartData)
 plot3d(heartData)
 surface3d(0:300,0:50,outer(0:300,0:50,function(x,y) {2.92+.04575*x+.18799*y}),alpha=.4)
 ```
+
+##Random Forest Model
+
+Let's start by splitting our data into training and test data. We will use this split for all future tasks.
+
 ```{r training test}
 smp_size <- floor(0.75 * nrow(heartData))
 set.seed(123)
@@ -292,12 +330,22 @@ heartData.train <- heartData[train_ind, ]
 heartData.test <- heartData[-train_ind, ]
 ```
 
+Now to create and train the model.
 
 ```{r random forest}
 heartData.rf<-randomForest(TenYearCHD~., data=heartData.train,mtry=5,importance=T,ntree=100)
 fit.pred<-predict(heartData.rf,newdata=heartData.test,type="response")
 table(fit.pred,heartData.test$TenYearCHD)
 ```
+
+Now let's take some accuracy metrics.
+
+```{r random forest}
+heartData.rf<-randomForest(TenYearCHD~., data=heartData.train,mtry=5,importance=T,ntree=100)
+fit.pred<-predict(heartData.rf,newdata=heartData.test,type="response")
+table(fit.pred,heartData.test$TenYearCHD)
+```
+
 
 
 ```{r random forest ROC}
