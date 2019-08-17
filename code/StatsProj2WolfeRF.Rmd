@@ -2,10 +2,12 @@
 title: "StatsProj2WolfeRF"
 author: "Michael J Wolfe"
 date: "August 2, 2019"
-output: pdf_document
+output:
+  word_document: default
+  pdf_document: default
 ---
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 ```
 
 ## Packages
@@ -20,8 +22,14 @@ library(rgl)
 library(tree)
 library(ISLR)
 library(ROCR)
+library(RColorBrewer)
+library(pheatmap)
+library(MASS)
+library(rpart)
+library(rpart.plot)
+library(ROSE)
 ```
-THe city of Framingham is concerned about the long term health of some of its citizens. In this exercise we will test probability models on a variety of factors that lead to coronary heart disease and recommend one solution.
+The city of Framingham is concerned about the long term health of some of its citizens. In this exercise we will test probability models on a variety of factors that lead to coronary heart disease and recommend one solution.
 
 ## Load Data
 
@@ -39,7 +47,7 @@ Some of these data have categories that aren't particularly intuitive. Let's rec
 ```{r recode}
 #https://dplyr.tidyverse.org/reference/recode.html
 
-heartData$male = recode(heartData$male, '1' = 'male', '0' = 'female')
+heartData$male = dplyr::recode(heartData$male, '1' = 'male', '0' = 'female')
 names(heartData)[1] = 'Gender'
 unique(heartData$Gender)
 
@@ -78,7 +86,7 @@ sapply(heartData, class)
 
 Those character columns would do better as factors, so let's change them.
 
-```{r pairs}
+```{r pairs2}
 cols_factor <- c("Gender", "education", "currentSmoker", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes", "TenYearCHD")
 heartData[cols_factor] <- lapply(heartData[cols_factor], factor)
 ```
@@ -113,7 +121,11 @@ Much better! However, it would be easier to interpret the model outcome as a per
 ```{r}
 levels(heartData$TenYearCHD)
 heartData$TenYearCHD = relevel(heartData$TenYearCHD, ref='No')
+table(heartData$TenYearCHD)
+557/3658
 ```
+
+After re-factoring the response variable it appears to be an unbalanced binary, with only about 15% of residents developing coronary heart disease after 10 years. This will need to be considered when created confusion matrices and scoring accuracy. We will likely need to create several cross-validation iterations, and possibly downsample if it appears our train/test splits skew too heavily towards "No" and create a falsly inflated accuracy score.
 
 ## Continuous variables
 
@@ -186,10 +198,12 @@ for (i in colnames(numeric_cols)){
 Mostly normally distributed with a couple exceptions. Now let's check mutlicolinearity and correlations.
 
 ```{r pairs correlation}
+require(dplyr)
 pairs(~ age + cigsPerDay + totChol + sysBP + diaBP + BMI + heartRate + glucose, data=heartData)
 pairs(~ age + cigsPerDay + totChol + sysBP + diaBP + BMI + heartRate + glucose, data=heartData,
       col=heartData$TenYearCHD)
-heartData.cor <- heartData %>% select(age, cigsPerDay, totChol, sysBP, diaBP, BMI, heartRate, glucose) %>%
+
+heartData.cor <- heartData %>% dplyr::select(age, cigsPerDay, totChol, sysBP, diaBP, BMI, heartRate, glucose) %>%
   cor()
 heartData.cor
 heatmap.2(heartData.cor,col=redgreen(20), 
@@ -265,9 +279,11 @@ ftable(addmargins(table(heartData$TenYearCHD,heartData$diabetes)))
 
 ##PCA
 
-Let's see if we can reduce this dataset down to a few principle components.
+Let's see if we can reduce this dataset down to a few principle components. Let's also remove Systolic BP, since there is a lot of correlation between SysBP and DiaBP.
 
 ```{r pca}
+require(dplyr)
+heartData <- dplyr::select(heartData, -sysBP)
 numeric_cols <- subset(heartData, select = -c(Gender, education, currentSmoker, BPMeds, prevalentStroke, prevalentHyp, diabetes, TenYearCHD))
 pc.result<-prcomp(numeric_cols,scale.=TRUE)
 pc.scores<-pc.result$x
@@ -278,17 +294,17 @@ pc.result$rotation
 
 Looks like fairly even variance. It's possible using PC's won't make much of a difference. Let's check the Scree plots and clustering.
 
-```{r pca}
+```{r pca2}
 pc.eigen<-(pc.result$sdev)^2
 pc.prop<-pc.eigen/sum(pc.eigen)
 pc.cumprop<-cumsum(pc.prop)
-plot(1:8,pc.prop,type="l",main="Scree Plot",ylim=c(0,1),xlab="PC #",ylab="Proportion of Variation")
-lines(1:8,pc.cumprop,lty=3)
+plot(1:7,pc.prop,type="l",main="Scree Plot",ylim=c(0,1),xlab="PC #",ylab="Proportion of Variation")
+lines(1:7,pc.cumprop,lty=3)
 ```
 
 If we were extremely conservative and used 0.1 as a cutoff we would still likely have 7 components. Looks like our initial assumption that using PC's is not the way to go might have been correct. Let's do some clustering around the first few PC's and confirm.
 
-```{r pca}
+```{r pca3}
 ggplot(data = pc.scores, aes(x = PC1, y = PC2)) +
   geom_point(aes(col=TenYearCHD), size=1)+
   geom_hline(yintercept = 0, colour = "gray65") +
@@ -309,13 +325,7 @@ ggplot(data = pc.scores, aes(x = PC2, y = PC3)) +
     ggtitle("PCA plot of Coronary Heart Disease Data")
 ```
 
-Separation isn't great in any of these. We will not use PCA for this data.
-
-```{r randomforest eda}
-simple.fit<-lm(TenYearCHD~., data=heartData)
-plot3d(heartData)
-surface3d(0:300,0:50,outer(0:300,0:50,function(x,y) {2.92+.04575*x+.18799*y}),alpha=.4)
-```
+Separation isn't great in any of these. We will not use PCA for this data. Since the continuous As this is a predictive model, it does not make pratical sense
 
 ##Random Forest Model
 
@@ -328,8 +338,22 @@ train_ind <- sample(seq_len(nrow(heartData)), size = smp_size)
 
 heartData.train <- heartData[train_ind, ]
 heartData.test <- heartData[-train_ind, ]
+heartData.train.under <- ovun.sample(TenYearCHD~., data=heartData.train, method='under',
+                                N=(444*2), seed=1)$data
+heartData.train.over <- ovun.sample(TenYearCHD~., data=heartData.train, method='over',
+                                N=(2482*2), seed=1)$data
 ```
 
+Let's try some clustering.
+
+```{r randomforest eda}
+cols <- colorRampPalette(brewer.pal(9, "Set1"))
+x<-t(subset(heartData.train, select = -c(Gender, education, currentSmoker, BPMeds, prevalentStroke, prevalentHyp, diabetes, TenYearCHD)))
+colnames(x)<-heartData.train$TenYearCHD
+pheatmap(x,annotation_col=data.frame(TenYearCHD=heartData.train$TenYearCHD),annotation_colors=list(TenYearCHD=c("0"="white","1"="green")),scale="row",legend=T,color=colorRampPalette(c("blue","white", "red"), space = "rgb")(100))
+```
+
+Similar to the earlier heatmap we are seeing a lot of clustering around blood pressure.
 Now to create and train the model.
 
 ```{r random forest}
@@ -338,15 +362,23 @@ fit.pred<-predict(heartData.rf,newdata=heartData.test,type="response")
 table(fit.pred,heartData.test$TenYearCHD)
 ```
 
-Now let's take some accuracy metrics.
+Lots of false positives. Let's try an undersampled model.
 
-```{r random forest}
-heartData.rf<-randomForest(TenYearCHD~., data=heartData.train,mtry=5,importance=T,ntree=100)
-fit.pred<-predict(heartData.rf,newdata=heartData.test,type="response")
-table(fit.pred,heartData.test$TenYearCHD)
+```{r random forest under}
+heartData.rf.under<-randomForest(TenYearCHD~., data=heartData.train.under,mtry=5,importance=T,ntree=100)
+fit.pred.under<-predict(heartData.rf.under,newdata=heartData.test,type="response")
+table(fit.pred.under,heartData.test$TenYearCHD)
 ```
 
+Now too many false negatives! Let's try an oversampled model now.
 
+```{r random forest over}
+heartData.rf.over<-randomForest(TenYearCHD~., data=heartData.train.over,mtry=5,importance=T,ntree=100)
+fit.pred.over<-predict(heartData.rf.over,newdata=heartData.test,type="response")
+table(fit.pred.over,heartData.test$TenYearCHD)
+```
+
+Not much improvement. Not likely we will get much accuracy out of this model but let's test anyway.
 
 ```{r random forest ROC}
 rf.pred<-predict(heartData.rf,newdata=heartData.test,type="prob")
@@ -354,10 +386,14 @@ pred <- prediction(rf.pred[,2], heartData.test$TenYearCHD)
 roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
 auc.train <- performance(pred, measure = "auc")
 auc.train <- auc.train@y.values
-plot(roc.perf,main="AUC of Test set of a Single Tree")
+plot(roc.perf,main="AUC of CHD Random Forest Test")
 abline(a=0, b= 1)
 text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+plot(heartData.rf, type ="l",main=deparse(substitute(heartData.rf)))
 ```
+
+As expected, not a great accuracy score, but perhaps we can get some insight from the variable importance analysis.
+
 ```{r random forest variable importance}
 varImpPlot (heartData.rf,type=1,main="Variable Importance")
 varImpPlot (heartData.rf,type=2,main="Variable Importance")
@@ -365,7 +401,7 @@ varImpPlot (heartData.rf,type=2,main="Variable Importance")
 attach(heartData)
 plot3d(sysBP,totChol,age,col=ifelse(TenYearCHD=="Yes","red","black"),size=4)
 
-#index1<-which(Indexwhich=="Bad")
+#index1<-which(Indexwhich=="Yes")
 #plot3d(sysBP[index1],totChol[index1],age[index1],col=ifelse(TenYearCHD=="Yes","red","black")[index1],size=4)
 
 #index2<-which(Indexwhich=="Medium")
@@ -375,24 +411,68 @@ plot3d(sysBP,totChol,age,col=ifelse(TenYearCHD=="Yes","red","black"),size=4)
 #plot3d(sysBP[index3],totChol[index3],age[index3],col=ifelse(TenYearCHD=="Yes","red","black")[index3],size=4)
 ```
 
-```{r LDA}
-heartData.train.x <- heartData.train[,1:ncol(heartData.train)-1]
-heartData.train.y <- heartData.train$TenYearCHD
-fit.lda <- lda(heartData.train.y ~ ., data = heartData.train.x)
-pred.lda <- predict(fit.lda, newdata = heartData.train.x)
+This affirms what we saw in model selection: blood pressure/hypertension, age, gender, and cigarette usage have the greatest impact on development of coronary heart disease.
 
-preds <- pred.lda$posterior
+##QDA
+
+Given that several of the continuous variables were critical for model accuracy according to the EDA, let's try some discriminant analysis. Since we same some non-normal distributions (lots of 0's in cigarette usage), let's use QDA so we can remain robust to violations in assumptions.
+
+```{r QDA}
+heartData.train.x <- subset(heartData.train, select = -c(Gender, education, currentSmoker, BPMeds, prevalentStroke, prevalentHyp, diabetes, TenYearCHD))
+heartData.train.y <- heartData.train$TenYearCHD
+fit.qda <- qda(heartData.train.y ~ ., data = heartData.train.x)
+pred.qda <- predict(fit.qda, newdata = heartData.train.x)
+table(pred.qda$class, heartData.train.y)
+```
+
+Again it appears we are going to need to undersampled to account for the unbiased response
+
+```{r QDA Under}
+heartData.train.under.x <- subset(heartData.train.under, select = -c(Gender, education, currentSmoker, BPMeds, prevalentStroke, prevalentHyp, diabetes, TenYearCHD))
+heartData.train.under.y <- heartData.train.under$TenYearCHD
+fit.qda.under <- qda(heartData.train.under.y ~ ., data = heartData.train.under.x)
+pred.qda.under <- predict(fit.qda.under, newdata = heartData.train.under.x)
+table(pred.qda.under$class, heartData.train.under.y)
+```
+
+Still not very accurate but some improvement. Let's try a test fit and see how accurate it is.
+
+```{r QDA 2}
+preds <- pred.qda.under$posterior
 preds <- as.data.frame(preds)
 
-pred <- prediction(preds[,2],heartData.train.y)
+pred <- prediction(preds[,2],heartData.train.under.y)
 roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
 auc.train <- performance(pred, measure = "auc")
 auc.train <- auc.train@y.values
 plot(roc.perf)
 abline(a=0, b= 1)
 text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+table(pred.qda.under$class, heartData.train.under.y)
+```
+
+Pretty good results for a basic QDA model. Most of the inaccuracy seems to come from false positives.
+
+```{r LDA reduced}
+#heartData.train <- heartData[1:3000,]
+#heartData.train.x <- heartData.train[,1:15]
+#reduced.lda <- lda(heartData.train.y ~ age+diaBP+cigsPerDay+diabetes+prevalentStroke, data = heartData.train.x)
+#pred.lda <- predict(reduced.lda, newdata = heartData.train)
+
+#preds <- pred.lda$posterior
+#preds <- as.data.frame(preds)
+
+#pred <- prediction(preds[,2],dat.train.y)
+#roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+#auc.train <- performance(pred, measure = "auc")
+#auc.train <- auc.train@y.values
+#plot(roc.perf)
+#abline(a=0, b= 1)
+#text(x = .40, y = .6,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
 
 ```
+
+Great ROC score, and the confusion matrix looks balanced.
 
 ```{r decision tree}
 par(mfrow=c(1,1))
@@ -400,6 +480,9 @@ tree.deep<-tree(TenYearCHD~., data=heartData) #default is for atleast 5 observat
 summary(tree.deep)
 plot(tree.deep)
 text(tree.deep,pretty=0)
+```
+
+```{r cv pruning}
 set.seed(123)
 cv.chd=cv.tree(tree.deep,FUN=prune.tree,method="deviance")
 names(cv.chd)
@@ -413,22 +496,24 @@ text(prune.chd,pretty=0)
 ```
 
 
-```{r decision tree}
-train.tree<-tree(TenYearCHD~.,data=heartData.train)
-summary(train.tree)
-plot(train.tree)
-text(train.tree,pretty=0)
-plot(cv.tree(train.tree,FUN=prune.tree,method="deviance"))
+```{r decision tree2, eval=FALSE}
+### Decision Tree
 
-mytree<-tree(TenYearCHD~.,data=heartData.train)
-yhat.tree<-predict(mytree,newdata=heartData.test)
-plot(yhat.tree,heartData.test$TenYearCHD,main="Single Tree with 8 splits",xlab="Predicted",ylab="Ten Year CHD")
-abline(0,1)
+term_vars <- c("Gender","age", "education","currentSmoker", "cigsPerDay", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes", "totChol",	"diaBP", 	"BMI", "heartRate", "glucose", "TenYearCHD")
+#term_vars <- c("male","age", "currentSmoker", "prevalentStroke", "prevalentHyp", "diabetes", 	"sysBP",	"diaBP", "education",	"cigsPerDay", "BPMeds", "totChol", "BMI", "heartRate", "glucose", "TenYearCHD")
+CHD_term_train <- heartData[1:3000,]
+CHD_term_test <- heartData[3001:nrow(heartData),]
+set.seed(99)  # set a pre-defined value for the random seed so that results are repeatable
+# Decision tree model
+rpart_model <- rpart(TenYearCHD ~.,
+                     data = CHD_term_train[term_vars],
+                     method = 'class',
+                     parms = list(split='information'),
+                     control = rpart.control(usesurrogate = 0,
+                                             maxsurrogate = 0))
+# Plot the decision tree
+rpart.plot(rpart_model, roundint = FALSE, type = 3)
 
-mytree<-tree(TenYearCHD~.,data=heartData.train,minsize=8,mindev=.0001)
-yhat.tree<-predict(mytree,newdata=heartData.test)
-plot(yhat.tree,heartData.test$TenYearCHD,main="Single Tree with Deep Splits",xlab="Predicted",ylab="Ten Year CHD")
-abline(0,1)
 ```
 
 
